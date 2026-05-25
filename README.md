@@ -1,134 +1,123 @@
-# AI Lead Qualification Agent for Telegram (DOE)
+# Universal AI Sales Agent
 
-Универсальный Telegram AI-агент для квалификации входящих лидов, ответов на вопросы по базе знаний (RAG) и передачи диалога живому менеджеру.
+Telegram conversational agent for inbound lead qualification with native amoCRM integration. Free-form dialog — no buttons, no scripts. Production. Paid client deployment.
 
-Проект построен по DOE-подходу:
-- `directives/` — регламенты и SOP
-- `orchestration/` — промпты и логика оркестрации
-- `execution/` — рабочий код, интеграции, БД, тесты
+The agent collects qualification fields, scores the lead 0–100, answers questions via RAG over the client's knowledge base, escalates to a human on risk triggers, and writes the result back to amoCRM.
 
-## Универсальный продукт
-Это универсальный AI-агент для продаж и первичной квалификации, который подходит под любой бизнес:
-- услуги,
-- e-commerce,
-- образовательные проекты,
-- B2B и локальные сервисы.
+---
 
-Перед запуском агент тонко настраивается под конкретную нишу и компанию:
-- правила квалификации и веса скоринга,
-- risk-триггеры эскалации,
-- база знаний клиента,
-- язык и стиль коммуникации.
+## What it does
 
-После настройки продукт готов к запуску в кратчайшие сроки. Базовая платформа уже реализована, для старта нужны только данные клиента для тонкой конфигурации.
+- **Qualifies leads in free-form dialog** — collects request, timing, budget, contact; scores 0–100 against configurable rules
+- **Answers via RAG** — retrieves from the client's knowledge base (services, prices, policies) and grounds every answer in source
+- **Escalates on risk** — explicit triggers (price objection, churn signal, support emergency) hand the lead to a human immediately
+- **Writes to amoCRM** — creates the lead card with custom fields auto-populated; assigns to the right pipeline stage
+- **Monitors SLA** — alerts the manager when a hot lead has been idle for too long
 
-## Что умеет
-- Свободный диалог в Telegram (не только кнопки).
-- Сбор полей лида: запрос, срок, бюджет, контакт.
-- Скоринг 0-100, статус `qualified / not_qualified`, теплота `cold/warm/hot`.
-- Ответы на вопросы клиента по базе знаний (RAG).
-- Эскалация менеджеру по risk-триггерам.
-- Карточка лида в чат менеджеров + кнопка `Взять лид`.
-- Фиксация в БД, кто забрал лид.
-- SLA-алерт при `pending_human` старше 1 часа.
+---
 
-## Стек
-- Python 3.13
-- aiogram 3
-- PostgreSQL 16
-- Docker / Docker Compose
-- OpenAI SDK (`OPENAI_BASE_URL=https://polza.ai/api/v1`)
+## Lead scoring
 
-## Быстрый старт
+| Score | Status | Action |
+|---|---|---|
+| 70–100 | Hot | Immediate handoff to manager |
+| 40–69 | Warm | Queue + notification |
+| 0–39 | Cold | Auto-nurturing flow |
 
-### 1) Установить зависимости
-```powershell
-python -m venv execution\.venv
-.\execution\.venv\Scripts\python.exe -m pip install -r execution\requirements.txt
+Weights, thresholds, and triggers are config — not code.
+
+---
+
+## Architecture
+
+```
+Telegram
+   │
+   ▼
+Aiogram 3 handlers
+   │
+   ▼
+Conversation manager (FSM + LLM)
+   │       │            │
+   │       │            └──► RAG retriever ──► pgvector (knowledge base)
+   │       │
+   │       └──► Qualification scorer (rules + LLM extraction)
+   │
+   ▼
+Decision router
+   │       │            │
+   │       │            └──► amoCRM API (lead card, custom fields, stage)
+   │       │
+   │       └──► Escalation queue ──► manager notification
+   │
+   └──► Audit log + SLA monitor
 ```
 
-### 2) Поднять PostgreSQL
-```powershell
-docker compose -f execution\docker-compose.yml up -d db
-Get-Content execution\sql\schema.sql -Raw | docker exec -i execution-db-1 psql -U leadbot -d leadbot
+---
+
+## Engineering decisions
+
+**Free-form, not scripted.** Button-based bots die on the first unexpected request. The agent uses structured output to extract qualification fields from natural dialog while keeping the conversation human.
+
+**RAG only — no model knowledge.** The agent never answers from training data about the client's business. If retrieval returns nothing, it says so and offers handoff. This is the only way to avoid hallucinated pricing or policies.
+
+**Hard escalation triggers.** Some signals (price negotiation, complaint, emergency) bypass the agent entirely. The agent's job is to qualify, not to gamble with high-value moments.
+
+**LLM fallback strategy.** On timeout or 5xx: graceful degradation to "I'll connect you with a manager" + queued retry. Never a stuck conversation.
+
+**Config-driven customization.** Each client gets their own `qualification_rules.py`, `risk_triggers.py`, `tone.py`, and knowledge base — no code changes per deployment.
+
+---
+
+## Tech stack
+
+- Python 3.13, Aiogram 3 (long polling)
+- PostgreSQL 16 + pgvector
+- OpenAI-compatible API
+- Docker, docker-compose
+- amoCRM REST API
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/foggearthquake/universal-AI-agent-sells
+cd universal-AI-agent-sells
+
+cp .env.example .env   # BOT_TOKEN, OPENAI_API_KEY, DB, amoCRM tokens
+docker compose up -d postgres
+psql -U user -d db -f schema.sql
+
+# Populate the knowledge base
+# place .md/.txt files under execution/knowledge/
+
+python -m bot
+pytest
 ```
 
-### 3) Настроить `.env`
-Создайте `execution/.env`:
-```env
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_WORK_CHAT_ID=-100...
-TELEGRAM_WORK_TOPIC_ID=0
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://polza.ai/api/v1
-OPENAI_MODEL=openai/gpt-4.1-mini
-DATABASE_URL=postgresql://leadbot:leadbot@localhost:5432/leadbot
-AMO_BASE_URL=
-AMO_ACCESS_TOKEN=
-DEFAULT_CLIENT_ID=default
+---
+
+## Per-client customization
+
+| File | Purpose |
+|---|---|
+| `config/qualification_rules.py` | Field weights, thresholds, scoring logic |
+| `config/risk_triggers.py` | Escalation keywords and patterns |
+| `config/tone.py` | Voice, formality, language |
+| `execution/knowledge/` | Client knowledge base (chunked + embedded on startup) |
+
+---
+
+## Repo layout (DOE structure)
+
+```
+Directives/      # SOPs, qualification policy, escalation policy
+Orchestration/   # prompts, conversation graph, scoring orchestration
+Execution/       # code, integrations (amoCRM, DB), tests
 ```
 
-### 4) Заполнить базу знаний клиента
-- `execution/clients/<client_id>.json`
-- `execution/clients/<client_id>/kb/*.md`
+---
 
-### 5) Запустить бота
-```powershell
-cd execution
-.\.venv\Scripts\python.exe main.py
-```
-
-### 6) Тесты
-```powershell
-$env:PYTHONPATH='execution'
-.\execution\.venv\Scripts\python.exe -m pytest execution\tests -q
-```
-
-## E2E-тест
-1. Напишите `/start` в личку боту.
-2. Отправьте лид-сообщение:
-   - `Нужна точная цена и договор сегодня, бюджет 200к, срок 2 недели, мой контакт @username`
-3. Проверьте:
-- бот отправил лид в менеджерский чат;
-- есть карточка и кнопка `Взять лид`;
-- после клика приходит сообщение, кто назначен на лид.
-
-## amoCRM (подробно)
-
-### Что уже реализовано
-- Есть клиент amoCRM: `execution/app/crm.py`
-- Есть retry на отправку (3 попытки, backoff).
-- Есть контракт payload: `execution/contracts/amocrm_payload.schema.json`
-
-### Что нужно от клиента для включения
-1. `AMO_BASE_URL` (пример: `https://yourdomain.amocrm.ru`)
-2. `AMO_ACCESS_TOKEN`
-3. Коды custom fields в amoCRM для:
-- intent
-- timeline
-- budget
-- contact
-- score
-
-### Как включить
-1. Заполнить `.env`:
-```env
-AMO_BASE_URL=https://yourdomain.amocrm.ru
-AMO_ACCESS_TOKEN=...
-```
-2. Обновить маппинг полей в `execution/app/crm.py` (блок `custom_fields_values`).
-3. Перезапустить бота.
-
-### Проверка интеграции
-1. Отправить тестовый лид боту.
-2. Убедиться, что в amoCRM появилась сделка.
-3. Проверить, что поля `intent/timeline/budget/contact/score` заполнены корректно.
-
-## Документы для внедрения и продаж
-- Шаблон онбординга клиента: `directives/client-onboarding-template.md`
-- Карточка продукта: `directives/product-card.md`
-
-## Roadmap
-- Полное включение amoCRM на реальных field code.
-- Персистентная память диалога между перезапусками из БД.
-- Админка управления `client_config` и KB.
+**Author:** Ainur Gabdraupov — AI Architect / AI Engineer
+[gabdra.pw](https://gabdra.pw) · [github.com/foggearthquake](https://github.com/foggearthquake)
